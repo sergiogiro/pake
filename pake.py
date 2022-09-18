@@ -3,6 +3,7 @@ import enum
 from collections import defaultdict
 from glob import glob
 from dataclasses import dataclass
+from pathlib import Path
 import os
 import subprocess
 from typing import Callable, Generic, List, NewType, Optional, Type, TypeVar, Union
@@ -11,20 +12,42 @@ from typing import Callable, Generic, List, NewType, Optional, Type, TypeVar, Un
 T = TypeVar("T")
 
 
-@dataclass(frozen=True)
+
 class Dependable:
     pass
 
 
-@dataclass(frozen=True)
+class TimestampedDependable(Dependable):
+    @abc.abstractmethod
+    def timestamp(self) -> Optional[float]:
+        pass
+
+
 class AtomicDependable(Dependable):
     pass
 
 
-@dataclass(frozen=True)
-class FileDependable(AtomicDependable):
-    filename: str
+class FileDependable(TimestampedDependable):
+    def __init__(self, filename: str):
+        super().__init__()
+        self.filename = filename
 
+    def timestamp(self) -> Optional[float]:
+        if not Path(self.filename).exists():
+            return None
+        return Path(self.filename).stat().st_mtime
+
+    def __str__(self):
+        return f"FileDependable(filename={self.filename})"
+
+    def __repr__(self):
+        return self.__str__()
+
+    def __eq__(self, o):
+        return self.filename == o.filename
+
+    def __hash__(self):
+        return hash(self.filename)
 
 @dataclass(frozen=True)
 class Dependency(Generic[T]):
@@ -34,14 +57,13 @@ class Dependency(Generic[T]):
     is_optional: bool = False
 
 
-@dataclass(frozen=True)
 class Output(Dependable):
     pass
 
 
-@dataclass(frozen=True)
-class FileOutput(Output):
-    filename: str
+class FileOutput(Output, FileDependable):
+    def __init__(self, filename: str):
+        super().__init__(filename)
 
 
 
@@ -91,7 +113,7 @@ class Rule(Generic[T]):
     dependencies: Callable[[T], list[Dependency]]
     outcomes: Callable[[T], list[Outcome]]
     executable: Callable[[T], Executable]
-    filter_for_needing_update: bool = False
+    filter_for_needing_update: bool = True
     needs_update = _default_rule_needs_update
 
     def artifact(
@@ -113,7 +135,9 @@ class Artifact(Generic[T], Dependable):
         rule_args: T,
         dependencies_map: dict[Dependency, Dependable],
     ):
+        self.name = name
         self.rule = rule
+        self.rule_args = rule_args
         self.dependencies_map = dependencies_map
         self.expanded_dependencies_map = {k: k.expand(v) for k, v in self.dependencies_map.items()}
         self.outcomes = self.rule.outcomes(rule_args)
@@ -137,6 +161,7 @@ class Artifact(Generic[T], Dependable):
                     for able in ables:
                         nu = come.needs_update(put, ency, able)
                         self.has_outputs_needing_update = self.has_outputs_needing_update or nu
+                        print("Dependable:", able, "nu:", nu)
                         if nu or not rule.filter_for_needing_update:
                             self.output_map[put][come][ency].add(
                                 (able, nu)
@@ -144,17 +169,18 @@ class Artifact(Generic[T], Dependable):
         # TODO: if an outcome doesn't have outputs, call needs_update with
         # output=None for each dependency/dependable (if there are no
         # dependencies/dependables, use None for those).
-        self.needs_update = lambda outcome, output: self.rule.needs_update(
-                self.output_map,
-                self.rule_args,
-                outcome,
-                output,
-                self.has_outcomes,
-                self.has_dependencies,
-                has_outputs_needing_update,
-        )
         self.executable = self.rule.executable(self.output_map)
 
+    def needs_update(self, outcome: Optional[Outcome] = None, output: Optional[Output] = None):
+        return self.rule.needs_update(
+            self.output_map,
+            self.rule_args,
+            outcome,
+            output,
+            self.has_outcomes,
+            self.has_dependencies,
+            self.has_outputs_needing_update
+        )
 
 
 GlobExpr = NewType("Glob", str)
@@ -171,11 +197,15 @@ GlobDependency = Dependency(
     dependable_type=GlobExpr,
     expand=lambda x: [FileDependable(f) for f in glob(x)],
 )
+
+
 FileNameDependency = Dependency(
     name="file",
     dependable_type=str,
     expand=lambda x: [FileDependable(x)]
 )
+
+
 FileNameListDependency = Dependency(
     name="files",
     dependable_type=list[str],
@@ -211,15 +241,28 @@ def obj_files_outputs_from_dependables(deps_to_ables: dict[Dependency, list[Atom
              for ency in deps_to_ables
              for able in deps_to_ables[ency] }
 
+
+def timestamp_based_outcome(
+    out: Output,
+    ency: Dependency,
+    able: AtomicDependable
+) -> bool:
+    if out.timestamp() is None:
+        return True
+    if able.timestamp() is None:
+        return True
+    return able.timestamp() >= out.timestamp()
+
 def objs_from_cs_outcomes(args: ObjsFromCsArgs) -> list[Outcome]:
     return [
         Outcome(
             name="obj_files",
             output_type=FileOutput,
             outputs_from_dependables=obj_files_outputs_from_dependables,
-            needs_update=lambda out, ency, able: True
+            needs_update=timestamp_based_outcome,
         )
     ]
+
 
 def shell_executable(command: list[str]) -> Executable:
     def execute():
@@ -229,6 +272,7 @@ def shell_executable(command: list[str]) -> Executable:
 
 
 def objs_from_cs_executable(output_map: OutputMap):
+    print("Output map:", output_map)
     ables = [
         ables_and_needs[0]
         for put in output_map
@@ -250,6 +294,11 @@ objs_from_cs = Rule(
 )
 
 
-artifact = objs_from_cs.artifact("this_dir_objs", ObjsFromCsArgs.globExpr, {GlobDependency: "*.c"})
-artifact.executable()
+artifact = objs_from_cs.artifact(
+    "this_dir_objs",
+    ObjsFromCsArgs.globExpr,
+    {GlobDependency: "*.c"}
+)
+if artifact.needs_update():
+    artifact.executable()
 print("Outputs", artifact.output_map.keys())
