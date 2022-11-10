@@ -108,15 +108,15 @@ DependenciesExpander = Callable[
 #    return has_outputs_needing_update
 
 
-class Plan:
+class PlanNode:
     def __init__(self, executable: Executable):
         self.executable = executable
-        self.dependencies: list[Plan] = []
-        self.needed_by: list[Plan] = []
+        self.dependencies: list[PlanNode] = []
+        self.needed_by: list[PlanNode] = []
 
-    def add_dependency(self, plan: "Plan"):
-        self.dependencies.append(plan)
-        plan.needed_by.append(self)
+    def add_dependency(self, plan_node: "PlanNode"):
+        self.dependencies.append(plan_node)
+        plan_node.needed_by.append(self)
 
     def execute(self, leaf_nodes):
         for l in leaf_nodes:
@@ -158,6 +158,7 @@ def expand_maybe_artifact_outputs(dependency, dependable):
         # TODO: can artifact outputs be expanded?
         return [ArtifactOutputs(dependable.artifact, [put]) for put in dependable.outputs]
     return dependency.expand(dependable)
+
 
 
 class Artifact(Generic[T]):
@@ -244,7 +245,7 @@ class Artifact(Generic[T]):
         leaf_nodes: Optional[list[Dependable]] = None,
     ):
         artifact = self
-        plan = Plan(artifact.executable)
+        plan_node = PlanNode(artifact.executable)
         if needed_by is None:
             needed_by = []
 
@@ -269,25 +270,25 @@ class Artifact(Generic[T]):
             for come in output_map[put]:
                 for ency in output_map[put][come]:
                     if (dep_artifact := output_info_to_artifact[(put,come,ency)]) is not None:
-                        dep_plan, _ = dep_artifact.make_plan(needed_by, leaf_nodes)
-                        if dep_plan is not None:
-                            plan.add_dependency(dep_plan)
+                        dep_plan_node, _ = dep_artifact.make_plan(needed_by, leaf_nodes)
+                        if dep_plan_node is not None:
+                            plan_node.add_dependency(dep_plan_node)
                             execute = True
                     for (able, nu) in output_map[put][come][ency]:
                         print("In make plan: able: ", able, "nu:", nu)
                         execute = execute or nu
         if not execute:
             return None, []
-        if len(plan.dependencies) == 0:
+        if len(plan_node.dependencies) == 0:
             leaf_nodes.append(artifact)
 
-        return plan, leaf_nodes
+        return plan_node, leaf_nodes
 
 
     def make(self):
-        plan, leaf_nodes = self.make_plan()
+        plan_node, leaf_nodes = self.make_plan()
         print("Leaf nodes:", leaf_nodes)
-        plan.execute(leaf_nodes)
+        plan_node.execute(leaf_nodes)
 
 
 
