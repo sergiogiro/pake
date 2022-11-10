@@ -109,18 +109,15 @@ DependenciesExpander = Callable[
 
 
 class PlanNode:
-    def __init__(self, executable: Executable):
-        self.executable = executable
+    def __init__(self, artifact: "Artifact"):
+        self.artifact = artifact
         self.dependencies: list[PlanNode] = []
         self.needed_by: list[PlanNode] = []
+
 
     def add_dependency(self, plan_node: "PlanNode"):
         self.dependencies.append(plan_node)
         plan_node.needed_by.append(self)
-
-    def execute(self, leaf_nodes):
-        for l in leaf_nodes:
-            l.executable()
 
 
 
@@ -160,7 +157,6 @@ def expand_maybe_artifact_outputs(dependency, dependable):
     return dependency.expand(dependable)
 
 
-
 class Artifact(Generic[T]):
     def __init__(
         self,
@@ -173,7 +169,10 @@ class Artifact(Generic[T]):
         self.rule = rule
         self.rule_args = rule_args
         self.dependencies_map = dependencies_map
-        self.expanded_dependencies_map = {k: expand_maybe_artifact_outputs(k, v) for k, v in self.dependencies_map.items()}
+        self.expanded_dependencies_map = {
+            k: expand_maybe_artifact_outputs(k, v)
+            for k, v in self.dependencies_map.items()
+        }
         print("Expanded dependencies map:", self.expanded_dependencies_map)
         self.outcomes = self.rule.outcomes(rule_args)
         self.output_map = defaultdict(
@@ -239,58 +238,76 @@ class Artifact(Generic[T]):
             self.has_outputs_needing_update
         )
 
-    def make_plan(
+    def expand_plan_node(
         self,
-        needed_by: Optional[list[Dependable]] = None,
-        leaf_nodes: Optional[list[Dependable]] = None,
-    ):
+        plan: "Plan",
+    ) -> PlanNode:
         artifact = self
-        plan_node = PlanNode(artifact.executable)
-        if needed_by is None:
-            needed_by = []
 
-        if leaf_nodes is None:
-            leaf_nodes = []
-
-        for n in needed_by:
-            if n.name == artifact.name:
-                raise ValueError(
-                    "Circular dependency:\n"
-                    + "\n->".join(n.name for n in needed_by)
-                    + "\n->"
-                    + artifact.name
-                )
-
-        needed_by.append(artifact)
         output_map = artifact.output_map
         output_info_to_artifact = artifact.output_info_to_artifact
         execute = False
+        plan_node = PlanNode(artifact)
         for put in output_map:
             print("Exploring output:", put)
             for come in output_map[put]:
                 for ency in output_map[put][come]:
                     if (dep_artifact := output_info_to_artifact[(put,come,ency)]) is not None:
-                        dep_plan_node, _ = dep_artifact.make_plan(needed_by, leaf_nodes)
+                        dep_plan_node = plan.get_or_generate_plan_node(dep_artifact)
                         if dep_plan_node is not None:
                             plan_node.add_dependency(dep_plan_node)
+                            # TODO: assuming that if a dependency executed, you must execute.
                             execute = True
                     for (able, nu) in output_map[put][come][ency]:
                         print("In make plan: able: ", able, "nu:", nu)
                         execute = execute or nu
-        if not execute:
-            return None, []
-        if len(plan_node.dependencies) == 0:
-            leaf_nodes.append(artifact)
 
-        return plan_node, leaf_nodes
+        if not execute:
+            return None
+
+        return plan_node
 
 
     def make(self):
-        plan_node, leaf_nodes = self.make_plan()
-        print("Leaf nodes:", leaf_nodes)
-        plan_node.execute(leaf_nodes)
+        plan = Plan()
+        plan.get_or_generate_plan_node(self)
+        plan.execute()
 
 
+class Plan:
+    def __init__(self):
+        self.leaf_nodes: list[PlanNode] = []
+        self.upstream: list[Artifact] = []
+        # Use None for artifacts that are not executed.
+        self.artifact_to_node: dict[Artifact, Optional[PlanNode]] = {}
+
+    def execute(self):
+        for l in self.leaf_nodes:
+            l.artifact.executable()
+
+
+    def check_circular_dependency(self, artifact: Artifact):
+        for n in self.upstream:
+            if n.name == artifact.name:
+                raise ValueError(
+                    "Circular dependency:\n"
+                    + "\n->".join(n.name for n in self.upstream)
+                    + "\n->"
+                    + artifact.name
+                )
+
+    def get_or_generate_plan_node(self, artifact: Artifact) -> Optional[PlanNode]:
+        if artifact in self.artifact_to_node:
+            return self.artifact_to_node[artifact]
+        self.check_circular_dependency(artifact)
+        self.upstream.append(artifact)
+        plan_node = artifact.expand_plan_node(self)
+        assert self.upstream[-1] is artifact
+        self.upstream.pop()
+        self.artifact_to_node[artifact] = plan_node
+        if plan_node is not None and len(plan_node.dependencies) == 0:
+            self.leaf_nodes.append(plan_node)
+        return plan_node
 
 GlobExpr = NewType("GlobExpr", list[str])
 
