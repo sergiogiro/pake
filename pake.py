@@ -217,7 +217,7 @@ class Artifact(Generic[T]):
             self.get_output_map()
         )
 
-    def outputs(self, outcome_name: str) -> set[AtomicDependable]:
+    def outputs(self, outcome_name: str) -> AtomicDependable:
         puts = set()
         output_map = self.get_output_map()
         for put in output_map:
@@ -245,20 +245,27 @@ class Artifact(Generic[T]):
         output_info_to_artifact = artifact.output_info_to_artifact
         execute = False
         plan_node = PlanNode(artifact)
-        for put in output_map:
-            print("Exploring output:", put)
-            for come in output_map[put]:
-                for ency in output_map[put][come]:
-                    if (dep_artifact := output_info_to_artifact[(put,come,ency)]) is not None:
-                        dep_plan_node = plan.get_or_generate_plan_node(dep_artifact)
-                        if dep_plan_node is not None:
-                            plan_node.add_dependency(dep_plan_node)
-                            # TODO: assuming that if a dependency executed, you must execute.
-                            execute = True
-                    for (able, nu) in output_map[put][come][ency]:
-                        print("In make plan: able: ", able, "nu:", nu)
-                        execute = execute or nu
+        
+        for able in self.dependencies_map.values():
+            print("able in expand: ", able)
+            if isinstance(able, ArtifactOutputs):
+                dep_plan_node = plan.get_or_generate_plan_node(able.artifact)
+                if dep_plan_node is not None:
+                    plan_node.add_dependency(dep_plan_node)
+                    # TODO: assuming that if a dependency executed, you must execute.
+                    execute = True
 
+        if not execute:
+            for come in self.rule.outcomes(self.rule_args):
+                for put, ency_to_ables in come.outputs_from_dependables(
+                        # TODO: expand depdencies in this method.
+                        self.expanded_dependencies_map
+                ).items():
+                    for ency, ables in ency_to_ables.items():
+                        for able in ables:
+                            execute = execute or come.needs_update(put, ency, able)
+
+    
         if not execute:
             return None
 
