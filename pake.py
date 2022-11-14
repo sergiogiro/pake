@@ -104,9 +104,6 @@ DependenciesExpander = Callable[
 ]
 
 
-#def _default_rule_make_plan(self, output_map: OutputMap, rule_args: T, outcome: Optional[Outcome], output: Optional[Output], has_outcomes: bool, has_dependencies: bool, has_outputs_needing_update: bool):
-#    return has_outputs_needing_update
-
 
 class PlanNode:
     def __init__(self, artifact: "Artifact"):
@@ -128,7 +125,6 @@ class Rule(Generic[T]):
     outcomes: Callable[[T], list[Outcome]]
     executable: Callable[[T], Executable]
     filter_for_needing_update: bool = True
-    # needs_update = _default_rule_needs_update
 
     def artifact(
         self,
@@ -185,7 +181,7 @@ class Artifact(Generic[T]):
         self.output_info_to_artifact = defaultdict(lambda: None)
         self.has_outcomes = False
         self.dependencies = False
-        self.has_outputs_needing_update = False
+
         for come in self.rule.outcomes(rule_args):
             self.has_outcomes = True
             for put, ency_to_ables in come.outputs_from_dependables(
@@ -198,14 +194,12 @@ class Artifact(Generic[T]):
                             for able_output in able.outputs:
                                 nu = come.needs_update(put, ency, able_output)
                                 print("Dependable from artifact:", able_output, "nu:", nu)
-                                self.has_outputs_needing_update = self.has_outputs_needing_update or nu
                                 self.output_map[put][come][ency].add(
                                     (able_output, nu)
                                 )
                             self.output_info_to_artifact[(put, come, ency)] = able.artifact
                         else:
                             nu = come.needs_update(put, ency, able)
-                            self.has_outputs_needing_update = self.has_outputs_needing_update or nu
                             print("Dependable:", able, "nu:", nu)
                             self.output_map[put][come][ency].add(
                                 (able, nu)
@@ -235,7 +229,6 @@ class Artifact(Generic[T]):
             output,
             self.has_outcomes,
             self.has_dependencies,
-            self.has_outputs_needing_update
         )
 
     def expand_plan_node(
