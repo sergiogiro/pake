@@ -171,20 +171,21 @@ class Artifact(Generic[T]):
         }
         print("Expanded dependencies map:", self.expanded_dependencies_map)
         self.outcomes = self.rule.outcomes(rule_args)
-        self.output_map = defaultdict(
+        self.output_info_to_artifact = defaultdict(lambda: None)
+
+    def get_output_map(self):
+        output_map = defaultdict(
                 lambda: defaultdict(
                     lambda: defaultdict(
                         lambda: set()
                     )
                 )
             )
-        self.output_info_to_artifact = defaultdict(lambda: None)
-        self.has_outcomes = False
-        self.dependencies = False
 
-        for come in self.rule.outcomes(rule_args):
+        for come in self.rule.outcomes(self.rule_args):
             self.has_outcomes = True
             for put, ency_to_ables in come.outputs_from_dependables(
+                    # TODO: expand depdencies in this method.
                     self.expanded_dependencies_map
             ).items():
                 for ency, ables in ency_to_ables.items():
@@ -194,29 +195,33 @@ class Artifact(Generic[T]):
                             for able_output in able.outputs:
                                 nu = come.needs_update(put, ency, able_output)
                                 print("Dependable from artifact:", able_output, "nu:", nu)
-                                self.output_map[put][come][ency].add(
+                                output_map[put][come][ency].add(
                                     (able_output, nu)
                                 )
                             self.output_info_to_artifact[(put, come, ency)] = able.artifact
                         else:
                             nu = come.needs_update(put, ency, able)
                             print("Dependable:", able, "nu:", nu)
-                            self.output_map[put][come][ency].add(
+                            output_map[put][come][ency].add(
                                 (able, nu)
                             )
-
 
         # TODO: if an outcome doesn't have outputs, call needs_update with
         # output=None for each dependency/dependable (if there are no
         # dependencies/dependables, use None for those).
-        self.executable = self.rule.executable(
-            self.output_map
+
+        return output_map
+
+    def get_executable(self, output_map):
+        return self.rule.executable(
+            self.get_output_map()
         )
 
     def outputs(self, outcome_name: str) -> set[AtomicDependable]:
         puts = set()
-        for put in self.output_map:
-           for come in self.output_map[put]:
+        output_map = self.get_output_map()
+        for put in output_map:
+           for come in output_map[put]:
                if come.name == outcome_name:
                    puts.add(put)
         return ArtifactOutputs(self, puts)
@@ -228,7 +233,6 @@ class Artifact(Generic[T]):
             outcome,
             output,
             self.has_outcomes,
-            self.has_dependencies,
         )
 
     def expand_plan_node(
@@ -237,7 +241,7 @@ class Artifact(Generic[T]):
     ) -> PlanNode:
         artifact = self
 
-        output_map = artifact.output_map
+        output_map = artifact.get_output_map()
         output_info_to_artifact = artifact.output_info_to_artifact
         execute = False
         plan_node = PlanNode(artifact)
@@ -276,7 +280,8 @@ class Plan:
 
     def execute(self):
         for l in self.leaf_nodes:
-            l.artifact.executable()
+            output_map = l.artifact.get_output_map()
+            l.artifact.get_executable(output_map)()
 
 
     def check_circular_dependency(self, artifact: Artifact):
