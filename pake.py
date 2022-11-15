@@ -110,12 +110,21 @@ class PlanNode:
         self.artifact = artifact
         self.dependencies: list[PlanNode] = []
         self.needed_by: list[PlanNode] = []
-
+        self.done: bool = False
 
     def add_dependency(self, plan_node: "PlanNode"):
         self.dependencies.append(plan_node)
         plan_node.needed_by.append(self)
 
+
+def _default_rule_needs_update(output_map: OutputMap) -> bool:
+    return any(
+        ables_and_needs[1]
+        for put in output_map
+        for come in output_map[put]
+        for ency in output_map[put][come]
+        for ables_and_needs in output_map[put][come][ency]
+    )
 
 
 @dataclass
@@ -124,8 +133,8 @@ class Rule(Generic[T]):
     dependencies: Callable[[T], list[Dependency]]
     outcomes: Callable[[T], list[Outcome]]
     executable: Callable[[T], Executable]
+    needs_update: Callable[[OutputMap], bool] = _default_rule_needs_update
     filter_for_needing_update: bool = True
-
     def artifact(
         self,
         name: str,
@@ -165,28 +174,26 @@ class Artifact(Generic[T]):
         self.rule = rule
         self.rule_args = rule_args
         self.dependencies_map = dependencies_map
-        self.expanded_dependencies_map = {
-            k: expand_maybe_artifact_outputs(k, v)
-            for k, v in self.dependencies_map.items()
-        }
-        print("Expanded dependencies map:", self.expanded_dependencies_map)
         self.outcomes = self.rule.outcomes(rule_args)
-        self.output_info_to_artifact = defaultdict(lambda: None)
 
     def get_output_map(self):
         output_map = defaultdict(
+            lambda: defaultdict(
                 lambda: defaultdict(
-                    lambda: defaultdict(
-                        lambda: set()
-                    )
+                    lambda: set()
                 )
             )
+        )
+
+        expanded_dependencies_map = {
+            k: expand_maybe_artifact_outputs(k, v)
+            for k, v in self.dependencies_map.items()
+        }
 
         for come in self.rule.outcomes(self.rule_args):
             self.has_outcomes = True
             for put, ency_to_ables in come.outputs_from_dependables(
-                    # TODO: expand depdencies in this method.
-                    self.expanded_dependencies_map
+                expanded_dependencies_map
             ).items():
                 for ency, ables in ency_to_ables.items():
                     self.has_dependencies = True
@@ -198,7 +205,6 @@ class Artifact(Generic[T]):
                                 output_map[put][come][ency].add(
                                     (able_output, nu)
                                 )
-                            self.output_info_to_artifact[(put, come, ency)] = able.artifact
                         else:
                             nu = come.needs_update(put, ency, able)
                             print("Dependable:", able, "nu:", nu)
@@ -212,10 +218,11 @@ class Artifact(Generic[T]):
 
         return output_map
 
-    def get_executable(self, output_map):
-        return self.rule.executable(
-            self.get_output_map()
-        )
+    def get_executable(self) -> Optional[Callable]:
+        output_map = self.get_output_map()
+        if not self.needs_update(output_map):
+            return None
+        return self.rule.executable(output_map)
 
     def outputs(self, outcome_name: str) -> AtomicDependable:
         puts = set()
@@ -226,13 +233,13 @@ class Artifact(Generic[T]):
                    puts.add(put)
         return ArtifactOutputs(self, puts)
 
-    def needs_update(self, outcome: Optional[Outcome] = None, output: Optional[Output] = None):
+    def needs_update(self, output_map: OutputMap, outcome: Optional[Outcome] = None, output: Optional[Output] = None):
         return self.rule.needs_update(
-            self.output_map,
-            self.rule_args,
-            outcome,
-            output,
-            self.has_outcomes,
+            output_map,
+            #            self.rule_args,
+            #outcome,
+            #output,
+            #self.has_outcomes,
         )
 
     def expand_plan_node(
@@ -242,7 +249,6 @@ class Artifact(Generic[T]):
         artifact = self
 
         output_map = artifact.get_output_map()
-        output_info_to_artifact = artifact.output_info_to_artifact
         execute = False
         plan_node = PlanNode(artifact)
         
@@ -250,24 +256,9 @@ class Artifact(Generic[T]):
             print("able in expand: ", able)
             if isinstance(able, ArtifactOutputs):
                 dep_plan_node = plan.get_or_generate_plan_node(able.artifact)
-                if dep_plan_node is not None:
-                    plan_node.add_dependency(dep_plan_node)
-                    # TODO: assuming that if a dependency executed, you must execute.
-                    execute = True
-
-        if not execute:
-            for come in self.rule.outcomes(self.rule_args):
-                for put, ency_to_ables in come.outputs_from_dependables(
-                        # TODO: expand depdencies in this method.
-                        self.expanded_dependencies_map
-                ).items():
-                    for ency, ables in ency_to_ables.items():
-                        for able in ables:
-                            execute = execute or come.needs_update(put, ency, able)
-
-    
-        if not execute:
-            return None
+                plan_node.add_dependency(dep_plan_node)
+                # TODO: assuming that if a dependency executed, you must execute.
+                execute = True
 
         return plan_node
 
@@ -286,10 +277,34 @@ class Plan:
         self.artifact_to_node: dict[Artifact, Optional[PlanNode]] = {}
 
     def execute(self):
-        for l in self.leaf_nodes:
-            output_map = l.artifact.get_output_map()
-            l.artifact.get_executable(output_map)()
+        finished: dict[int, PlanNode] = {}
+        max_finished = 0
 
+        def execute_node(n):
+            nonlocal max_finished
+            executable = n.artifact.get_executable()
+            if executable is not None:
+                executable()
+                n.done = True
+                if len(n.needed_by) > 0:
+                    finished[max_finished] = l
+                    max_finished += 1
+ 
+        for l in self.leaf_nodes:
+            execute_node(l)
+
+        while len(finished) != 0:
+            for i, f in finished.items():
+                all_done = []
+                for upstream in f.needed_by:
+                    if upstream.done:
+                        continue
+                    if all(d.done for d in upstream.dependencies):
+                        execute_node(upstream)
+                if all(u.done for u in f.needed_by):
+                    all_done.append(i)
+            for i in all_done:
+                del finished[i]
 
     def check_circular_dependency(self, artifact: Artifact):
         for n in self.upstream:
