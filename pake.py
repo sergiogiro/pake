@@ -92,10 +92,30 @@ class Outcome(Generic[T]):
     needs_update: Callable[[Optional[T], Optional[Dependency], Optional[AtomicDependable]], bool] = _default_outcome_needs_update
 #    make_plan: Callable[[Optional[T], Optional[Dependency], Optional[AtomicDependable]], bool] = _default_outcome_make_plan
 
+    @staticmethod
+    def from_args(o: Callable[[T], "Outcome"]):
+        return OutcomeFromArgs(o)
+
+
+@dataclass(frozen=True)
+class OutcomeFromArgs(Generic[T]):
+    outcomeFromArgs: Callable[[T], Outcome]
+
+
 OutputMap = dict[Output, dict[Outcome, dict[Dependency, list[Dependable, bool]]]]
 
 
-Executable = Callable[[], None]
+@dataclass
+class Executable:
+    executable: Callable[[], None]
+    @staticmethod
+    def from_args(instruction: Callable[[T], "Executable"]) -> "Instruction":
+        return Instruction(instruction)
+
+
+@dataclass
+class Instruction(Generic[T]):
+    instruction: Callable[[T], Executable]
 
 
 DependenciesExpander = Callable[
@@ -127,23 +147,93 @@ def _default_rule_needs_update(output_map: OutputMap) -> bool:
     )
 
 
-@dataclass
 class Rule(Generic[T]):
-    name: str
-    dependencies: Callable[[T], list[Dependency]]
-    outcomes: Callable[[T], list[Outcome]]
-    executable: Callable[[T], Executable]
-    needs_update: Callable[[OutputMap], bool] = _default_rule_needs_update
-    filter_for_needing_update: bool = True
-    def artifact(
-        self,
-        name: str,
-        args: T,
-        dependencies_map: dict[Dependency, Dependable]
-    )-> "Artifact":
-        # TODO: Check that the keys of the map coincide with
-        # the self.dependencies(args)
-        return Artifact(name, self, args, dependencies_map)
+    # def __new__(
+    #         cls,
+    #         name,
+    #         bases,
+    #         attrs,
+    #         dependencies: Callable[[T], list[Dependency]],
+    #         executable: Callable[[T], Executable],
+    #         needs_update: Callable[[OutputMap], bool] = _default_rule_needs_update,
+    #         filter_for_needing_update: bool = True,
+    # ):
+    #     super().__new__(name, bases, attrs, dependencies, executable, needs_update, filter_for_needing_update)
+
+    def __init_subclass__(
+            cls,
+            # name,
+            # bases,
+            # attrs,
+            dependencies: Optional[Callable[[T], list[Dependency]]] = None,
+            executable: Optional[Callable[[T], Executable]] = None,
+            needs_update: Callable[[OutputMap], bool] = _default_rule_needs_update,
+            filter_for_needing_update: bool = True,
+            **kwargs,
+    ):
+        print("kwargsgsg:", kwargs)
+        attrs = {}
+        # _executable = None
+        _outcomes = []
+        print("Dict:", cls.__dict__)
+        for k, v in cls.__dict__.items():
+            if isinstance(v, Outcome):
+                # TODO: make _outcomes a dictionary?
+                _outcomes.append(OutcomeFromArgs(lambda _, vv=v: vv))
+            elif isinstance(v, OutcomeFromArgs):
+                # TODO
+                _outcomes.append(v)
+            # if k == "executable":
+            #     if isinstance(v, Instruction):
+            #         _executable = v.instruction
+            #     elif isinstance(v, Executable):
+            #         _executable = Instruction(lambda: v.executable)
+        new_attrs = {k: v for k, v in attrs.items()}
+        new_attrs.update({
+            "executable": executable,
+            "_dependencies": dependencies,
+            "_outcomes": _outcomes,
+            "needs_update": _default_rule_needs_update,
+            "filter_for_needing_update": True,
+        })
+        print(attrs)
+        # t = super().__new__(mcs, name, bases, new_attrs)
+
+        def new_init(cls, *args, **kwargs):
+            raise ValueError("Pake rules can't be instantiated")
+        cls.__init__ = new_init
+        cls.executable = executable
+        cls._dependencies = dependencies
+        cls._outcomes = _outcomes
+        cls.needs_update = needs_update
+        cls.filter_for_needing_update = filter_for_needing_update
+        # return t
+        # raise ValueError("Pake rules can't be instantiated")
+        # print(attrs)
+        # return type.__new__(mcs, name, bases, attrs)
+        # print("abcABCabc")
+        # for a in cls.__dict__:
+        #     print(a)
+
+    @classmethod
+    def outcomes(cls) -> list[OutcomeFromArgs]:
+        print("Outcomes:", cls._outcomes)
+        return cls._outcomes
+
+    @classmethod
+    def dependencies(cls):
+        return cls._dependencies
+
+
+def artifact(
+    rule: Type[Rule],
+    name: str,
+    args: T,
+    dependencies_map: dict[Dependency, Dependable]
+) -> "Artifact":
+    # TODO: Check that the keys of the map coincide with
+    # the self.dependencies(args)
+    return Artifact(name, rule, args, dependencies_map)
 
 
 OutputMap = dict[Output, dict[Outcome, dict[Dependency, list[Dependable, bool]]]]
@@ -166,7 +256,7 @@ class Artifact(Generic[T]):
     def __init__(
         self,
         name: str,
-        rule: Rule,
+        rule: type[Rule],
         rule_args: T,
         dependencies_map: dict[Dependency, Dependable],
     ):
@@ -174,7 +264,12 @@ class Artifact(Generic[T]):
         self.rule = rule
         self.rule_args = rule_args
         self.dependencies_map = dependencies_map
-        self.outcomes = self.rule.outcomes(rule_args)
+        self.outcomes = []
+        for o in self.rule.outcomes():
+            res = o.outcomeFromArgs(rule_args)
+            if res is not None:
+                self.outcomes.append(res)
+        # self.outcomes = [res for o in self.rule.outcomes() if (res := o.outcomeFromArgs(rule_args)) is not None]
 
     def get_output_map(self):
         output_map = defaultdict(
@@ -190,13 +285,11 @@ class Artifact(Generic[T]):
             for k, v in self.dependencies_map.items()
         }
 
-        for come in self.rule.outcomes(self.rule_args):
-            self.has_outcomes = True
+        for come in self.outcomes:
             for put, ency_to_ables in come.outputs_from_dependables(
                 expanded_dependencies_map
             ).items():
                 for ency, ables in ency_to_ables.items():
-                    self.has_dependencies = True
                     for able in ables:
                         if isinstance(able, ArtifactOutputs):
                             for able_output in able.outputs:
@@ -222,7 +315,7 @@ class Artifact(Generic[T]):
         output_map = self.get_output_map()
         if not self.needs_update(output_map):
             return None
-        return self.rule.executable(output_map)
+        return self.rule.executable.executable(output_map)
 
     def outputs(self, outcome_name: str) -> AtomicDependable:
         puts = set()
@@ -261,7 +354,6 @@ class Artifact(Generic[T]):
                 execute = True
 
         return plan_node
-
 
     def make(self):
         plan = Plan()
@@ -329,6 +421,7 @@ class Plan:
             self.leaf_nodes.append(plan_node)
         return plan_node
 
+
 GlobExpr = NewType("GlobExpr", list[str])
 
 
@@ -368,15 +461,13 @@ FileNameListDependency = Dependency(
 )
 
 
-
 def files_dependencies(args: ObjsFromCsArgs) -> list[Dependency]:
     if args is ObjsFromCsArgs.globExpr:
         return [GlobDependency]
     if args is ObjsFromCsArgs.fileName:
-        return [FileDependency]
+        return [FileNameDependency]
     if args is ObjsFromCsArgs.fileNameList:
         return [FileNameListDependency]
-
 
 
 def timestamp_based_outcome(
@@ -427,12 +518,4 @@ def single_file_output_from_dependables(filename: str, deps_to_ables: dict[Depen
         }
     }
 
-
-
-
-# if this_dir_objs.needs_update():
-#     this_dir_objs.executable()
-# print("Outputs", this_dir_objs.output_map.keys())
-
-# this_dir_exec.make()
 
