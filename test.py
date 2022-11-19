@@ -18,7 +18,7 @@ class TestThisDirExec(unittest.TestCase):
     def test_this_dir_exec(self, mock_execute_in_shell):
         Path("a.o").touch()
         Path("b.o").unlink(missing_ok=True)
-        pk.this_dir_exec().make()
+        pk.this_dir_exec.make()
    
         print("Call args list:", mock_execute_in_shell.call_args_list)
 

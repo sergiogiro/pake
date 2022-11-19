@@ -470,12 +470,11 @@ objs_from_cs = Rule(
 )
 
 
-def this_dir_objs():
-    return objs_from_cs.artifact(
-        "this_dir_objs",
-        ObjsFromCsArgs.globExpr,
-        {GlobDependency: ["*.c"]}
-    )
+this_dir_objs = objs_from_cs.artifact(
+    "this_dir_objs",
+    ObjsFromCsArgs.globExpr,
+    {GlobDependency: ["*.c"]}
+)
 
 
 # if this_dir_objs.needs_update():
@@ -492,10 +491,10 @@ def single_file_output_from_dependables(filename: str, deps_to_ables: dict[Depen
     }
 
 
-
 @dataclass
 class ExecFromObjsArgs:
     exec_name: str
+
 
 def exec_from_objs_outcomes(args: ExecFromObjsArgs) -> list[Outcome]:
     return [
@@ -533,12 +532,11 @@ exec_from_objs = Rule(
 )
 
 
-def this_dir_exec():
-    return exec_from_objs.artifact(
-        "this_dir_exec",
-        ExecFromObjsArgs(exec_name="ppp"),
-        {FileNameListDependency: this_dir_objs().outputs("obj_files")}
-    )
+this_dir_exec = exec_from_objs.artifact(
+    "this_dir_exec",
+    ExecFromObjsArgs(exec_name="ppp"),
+    {FileNameListDependency: this_dir_objs.outputs("obj_files")}
+)
 
 
 # if this_dir_objs.needs_update():
