@@ -1,4 +1,5 @@
-from pathlib import Path
+import os
+
 import unittest
 from unittest.mock import call, patch
 
@@ -8,8 +9,9 @@ from pake import *
 executed_command = []
 
 
-def obj_files_outputs_from_dependables(deps_to_ables: dict[Dependency, list[AtomicDependable]]):
+def obj_files_outputs_from_dependables(deps_to_ables: dict[Dependency, list[FileDependable]]):
     print("Deps to ables:", deps_to_ables)
+
     def extension_to_o(path):
         spath = path.rsplit(".", 1)
         if len(spath) < 2:
@@ -26,24 +28,13 @@ def obj_files_outputs_from_dependables(deps_to_ables: dict[Dependency, list[Atom
 
     # TODO: consider output files tied to multiple dependencies/ables?
     ret = {
-        FileOutput(extension_to_o(able.filename)): { ency: (able,) }
+        FileOutput(extension_to_o(able.filename)): {ency: (able,)}
         for ency in deps_to_ables
         for able in deps_to_ables[ency]
         if extension_to_o(able.filename) is not None
     }
     print("Obj files outputs:", ret)
     return ret
-
-
-def objs_from_cs_outcomes(args: ObjsFromCsArgs) -> list[Outcome]:
-    return [
-        Outcome(
-            name="obj_files",
-            output_type=list[FileOutput],
-            outputs_from_dependables=obj_files_outputs_from_dependables,
-            needs_update=timestamp_based_outcome,
-        )
-    ]
 
 
 @dataclass
@@ -63,15 +54,14 @@ def exec_from_objs_outcomes(args: ExecFromObjsArgs) -> list[Outcome]:
 
 
 def exec_from_objs_executable(output_map: OutputMap):
-    output = list(output_map.keys())[0]
-    outcome = list(output_map[output].keys())[0]
-    print("Output map:", output_map)
+    om = output_map()
+    output = list(om.keys())[0]
     ables = [
         ables_and_needs[0]
-        for put in output_map
-        for come in output_map[put]
-        for ency in output_map[put][come]
-        for ables_and_needs in output_map[put][come][ency]
+        for put in om
+        for come in om[put]
+        for ency in om[put][come]
+        for ables_and_needs in om[put][come][ency]
     ]
     print("Ables: ", ables)
     return shell_executable(
@@ -79,7 +69,7 @@ def exec_from_objs_executable(output_map: OutputMap):
     )
 
 
-def objs_from_cs_executable(output_map: OutputMap):
+def objs_from_cs_executable(output_map: OutputMap[any, any, any, FileDependable]) -> Action:
     print("Output map:", output_map)
 
     return shell_executable(
@@ -94,7 +84,7 @@ class TestThisDirExec(unittest.TestCase):
     @patch("pake._do_execute_in_shell")
     def test_this_dir_exec(self, mock_execute_in_shell):
         class ExecFromObjs(
-            Rule[int],
+            Rule[ExecFromObjsArgs],
             dependencies=files_dependencies,
             executable=Executable(exec_from_objs_executable),
         ):
@@ -126,7 +116,7 @@ class TestThisDirExec(unittest.TestCase):
             ObjsFromCs,
             "this_dir_objs",
             ObjsFromCsArgs.globExpr,
-            {GlobDependency: ["*.c"]}
+            {**file_globs_dependency(["*.c"])}
         )
 
         this_dir_exec = artifact(
