@@ -122,10 +122,10 @@ Able = TypeVar("Able", bound=Dependable)
 
 
 class OutputMap(Generic[Put, Come, Ency, Able]):
-    def __init__(self, output_map: dict[Put, dict[Come, dict[Ency, set[tuple[Able, bool]]]]]):
+    def __init__(self, output_map: dict[Put, dict[Able, dict[bool, dict[Come, set[Ency]]]]]):
         self.output_map = output_map
 
-    def __call__(self):
+    def __call__(self) -> dict[Put, dict[Able, dict[bool, dict[Come, set[Ency]]]]]:
         return self.output_map
 
 
@@ -166,11 +166,10 @@ class PlanNode:
 
 def _default_rule_needs_update(output_map: OutputMap, _come: Outcome, _put: Output) -> bool:
     return any(
-        ables_and_needs[1]
+        nu
         for put in output_map()
-        for come in output_map()[put]
-        for ency in output_map()[put][come]
-        for ables_and_needs in output_map()[put][come][ency]
+        for able in output_map()[put]
+        for nu in output_map()[put][able]
     )
 
 
@@ -265,18 +264,15 @@ class Artifact(Dependable, Generic[T]):
         self.rule = rule
         self.rule_args = rule_args
         self.dependencies_map = dependencies_map
-        self.outcomes = []
-        for o in self.rule.outcomes():
-            res = o.outcomeFromArgs(rule_args)
-            if res is not None:
-                self.outcomes.append(res)
-        # self.outcomes = [res for o in self.rule.outcomes() if (res := o.outcomeFromArgs(rule_args)) is not None]
+        self.outcomes = [res for o in self.rule.outcomes() if (res := o.outcomeFromArgs(rule_args)) is not None]
 
     def get_output_map(self):
         output_map = OutputMap(defaultdict(
             lambda: defaultdict(
                 lambda: defaultdict(
-                    lambda: set()
+                    lambda: defaultdict(
+                        lambda: set()
+                    )
                 )
             )
         ))
@@ -296,15 +292,11 @@ class Artifact(Dependable, Generic[T]):
                             for able_output in able.outputs:
                                 nu = come.needs_update(put, ency, able_output)
                                 print("Dependable from artifact:", able_output, "nu:", nu)
-                                output_map()[put][come][ency].add(
-                                    (able_output, nu)
-                                )
+                                output_map()[put][able_output][nu][come].add(ency)
                         else:
                             nu = come.needs_update(put, ency, able)
                             print("Dependable:", able, "nu:", nu)
-                            output_map()[put][come][ency].add(
-                                (able, nu)
-                            )
+                            output_map()[put][able][nu][come].add(ency)
 
         # TODO: if an outcome doesn't have outputs, call needs_update with
         # output=None for each dependency/dependable (if there are no
@@ -322,9 +314,16 @@ class Artifact(Dependable, Generic[T]):
         puts = set()
         output_map = self.get_output_map()
         for put in output_map():
-            for come in output_map()[put]:
-                if come.name == outcome_name:
-                    puts.add(put)
+            for able in output_map()[put]:
+                # TODO: add some parameter to specify whether
+                #  to get them all or only the updated ones?
+                # TODO: this is happening at the wrong time, we shouldn't
+                #  get the OutputMap until we're ready to execute.
+                #  Perhaps make that a property of the PlanNode?
+                for nu in output_map()[put][able]:
+                    for come in output_map()[put][able][nu]:
+                        if come.name == outcome_name:
+                            puts.add(put)
         return ArtifactOutputs(self, puts)
 
     def needs_update(self, output_map: OutputMap, outcome: Optional[Outcome] = None, output: Optional[Output] = None):
@@ -498,12 +497,10 @@ def shell_executable(command: list[str]) -> Action:
 def dependables_needing_update(output_map: OutputMap[Put, Come, Ency, Able]) -> list[Able]:
     om = output_map()
     return [
-        ables_and_needs[0]
+        able
         for put in om
-        for come in om[put]
-        for ency in om[put][come]
-        for ables_and_needs in om[put][come][ency]
-        if ables_and_needs[1]
+        for able in om[put]
+        if True in om[put][able]
     ]
 
 

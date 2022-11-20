@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import call, patch
 
 from pake import *
-
+from dataclasses import dataclass
 
 executed_command = []
 
@@ -38,31 +38,14 @@ def obj_files_outputs_from_dependables(deps_to_ables: dict[Dependency, list[File
 
 
 @dataclass
-class ExecFromObjsArgs:
+class ExecFromObjsArgs(object):
     exec_name: str
-
-
-def exec_from_objs_outcomes(args: ExecFromObjsArgs) -> list[Outcome]:
-    return [
-        Outcome(
-            name="exec",
-            output_type=FileOutput,
-            outputs_from_dependables=lambda deps_to_ables: single_file_output_from_dependables(args.exec_name, deps_to_ables),
-            needs_update=timestamp_based_outcome,
-        )
-    ]
 
 
 def exec_from_objs_executable(output_map: OutputMap):
     om = output_map()
     output = list(om.keys())[0]
-    ables = [
-        ables_and_needs[0]
-        for put in om
-        for come in om[put]
-        for ency in om[put][come]
-        for ables_and_needs in om[put][come][ency]
-    ]
+    ables = dependables_needing_update(output_map)
     print("Ables: ", ables)
     return shell_executable(
         ["gcc", "-o", output.filename] + sorted([able.filename for able in ables])
@@ -136,4 +119,3 @@ class TestThisDirExec(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
