@@ -21,7 +21,8 @@ Plans for extension include:
 - Wiring to web frameworks (for instance, modelling the response
 to a web request as an artifact, with the computation of the request
 split as the computation of several intermediate artifacts).
-
+- Support for verified code, proving properties of artifacts
+based on properties of the inputs.
 
 ## Usage
 
