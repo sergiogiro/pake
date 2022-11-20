@@ -1,4 +1,5 @@
 import abc
+import dataclasses
 import enum
 from collections import defaultdict
 from glob import glob
@@ -92,6 +93,7 @@ def _default_outcome_needs_update(
 
 AtomicAble = TypeVar("AtomicAble", bound=AtomicDependable)
 
+
 @dataclass(frozen=True)
 class Outcome(Generic[T, AtomicAble]):
     name: str
@@ -104,6 +106,7 @@ class Outcome(Generic[T, AtomicAble]):
         [Optional[T], Optional[Dependency], Optional[AtomicAble]],
         bool
     ] = _default_outcome_needs_update
+    inArtifact: Optional[type["Artifact"]] = None
 
     @staticmethod
     def from_args(o: Callable[[T], "Outcome"]):
@@ -153,7 +156,7 @@ DependenciesExpander = Callable[
 
 
 class PlanNode:
-    def __init__(self, artifact: "Artifact"):
+    def __init__(self, artifact: type["Artifact"]):
         self.artifact = artifact
         self.dependencies: list[PlanNode] = []
         self.needed_by: list[PlanNode] = []
@@ -181,6 +184,7 @@ class Rule(Generic[T]):
             # attrs,
             dependencies: Optional[Callable[[T], list[Dependency]]] = None,
             executable: Optional[Callable[[T], Executable]] = None,
+            rule_args_type: Optional[Type[T]] = None,
             needs_update: Callable[[OutputMap], bool] = _default_rule_needs_update,
             filter_for_needing_update: bool = True,
     ):
@@ -198,6 +202,7 @@ class Rule(Generic[T]):
         def new_init(_c, *_args, **_kwargs):
             raise ValueError("Pake rules can't be instantiated")
         cls.__init__ = new_init
+        cls._rule_args_type = rule_args_type
         cls._executable = executable
         cls._dependencies = dependencies
         cls._outcomes = _outcomes
@@ -227,20 +232,13 @@ class Rule(Generic[T]):
     def executable(cls):
         return getattr(cls, "_executable")
 
-
-def artifact(
-    rule: Type[Rule],
-    name: str,
-    args: T,
-    dependencies_map: dict[Dependency, Dependable]
-) -> "Artifact":
-    # TODO: Check that the keys of the map coincide with
-    # the self.dependencies(args)
-    return Artifact(name, rule, args, dependencies_map)
+    @classmethod
+    def rule_args_type(cls) -> type[T]:
+        return getattr(cls, "_rule_args_type")
 
 
 class ArtifactOutputs(AtomicDependable, Generic[Put]):
-    def __init__(self, artifact: "Artifact", outputs: set[Put]):
+    def __init__(self, artifact: type["Artifact"], outputs: set[Put]):
         self.artifact = artifact
         self.outputs = outputs
 
@@ -252,21 +250,59 @@ def expand_maybe_artifact_outputs(dependency, dependable):
     return dependency.expand(dependable)
 
 
-class Artifact(Dependable, Generic[T]):
-    def __init__(
-        self,
-        name: str,
-        rule: type[Rule],
-        rule_args: T,
-        dependencies_map: dict[Dependency, Dependable],
-    ):
-        self.name = name
-        self.rule = rule
-        self.rule_args = rule_args
-        self.dependencies_map = dependencies_map
-        self.outcomes = [res for o in self.rule.outcomes() if (res := o.outcomeFromArgs(rule_args)) is not None]
+R = TypeVar("R", bound=Rule)
 
-    def get_output_map(self):
+
+class Artifact(Dependable, Generic[T, R]):
+    dependencies_map: dict[Dependency, Dependable] = {}
+    rule: Optional[type[R]] = None
+    rule_args: Optional[type[T]] = None
+    outcomes: list[Outcome] = []
+
+    def __init_subclass__(
+        cls,
+    ):
+        dependencies_map = {}
+
+        rule: Optional[type[R]] = None
+        rule_args: Optional[type[T]] = None
+        for k, v in cls.__dict__.items():
+            if k == "rule":
+                rule = v
+            elif k == "args":
+                rule_args = v
+            elif k == "deps":
+                dependencies_map = v
+
+        if rule is None:
+            raise ValueError("Must pass rule, rule_args and dependencies_map")
+
+        cls.rule = rule
+        cls.rule_args = rule_args
+        cls.dependencies_map = dependencies_map
+
+        cls.outcomes = [
+            res for o in cls.rule.outcomes()
+            if (res := o.outcomeFromArgs(cls.rule_args)) is not None
+        ]
+
+        def _getattribute(item: str):
+            if item == "rule":
+                rule_in_artifact = type(
+                    f"{cls.rule.__name__}In{cls.__name__}",
+                    (cls.rule, InArtifact),
+                    artifact=cls,
+                )
+                for k, v in rule_in_artifact.__dict__.items():
+                    if isinstance(v, Outcome):
+                        rule_in_artifact.k = Outcome(**dict(**dataclasses.asdict(v), artifact=cls))
+            else:
+                return super().__getattribute__(item)
+
+        cls.__getattribute__ = _getattribute
+
+    @classmethod
+    def get_output_map(cls):
         output_map = OutputMap(defaultdict(
             lambda: defaultdict(
                 lambda: defaultdict(
@@ -279,10 +315,10 @@ class Artifact(Dependable, Generic[T]):
 
         expanded_dependencies_map = {
             k: expand_maybe_artifact_outputs(k, v)
-            for k, v in self.dependencies_map.items()
+            for k, v in cls.dependencies_map.items()
         }
 
-        for come in self.outcomes:
+        for come in cls.outcomes:
             for put, ency_to_ables in come.outputs_from_dependables(
                 expanded_dependencies_map
             ).items():
@@ -304,15 +340,17 @@ class Artifact(Dependable, Generic[T]):
 
         return output_map
 
-    def get_executable(self) -> Optional[Callable]:
-        output_map = self.get_output_map()
-        if not self.needs_update(output_map):
+    @classmethod
+    def get_executable(cls) -> Optional[Callable]:
+        output_map = cls.get_output_map()
+        if not cls.needs_update(output_map):
             return None
-        return self.rule.executable().executable(output_map)
+        return cls.rule.executable().executable(output_map)
 
-    def outputs(self, outcome_name: str) -> AtomicDependable:
+    @classmethod
+    def outputs(cls, outcome_name: str) -> AtomicDependable:
         puts = set()
-        output_map = self.get_output_map()
+        output_map = cls.get_output_map()
         for put in output_map():
             for able in output_map()[put]:
                 # TODO: add some parameter to specify whether
@@ -324,47 +362,48 @@ class Artifact(Dependable, Generic[T]):
                     for come in output_map()[put][able][nu]:
                         if come.name == outcome_name:
                             puts.add(put)
-        return ArtifactOutputs(self, puts)
+        return ArtifactOutputs(cls, puts)
 
-    def needs_update(self, output_map: OutputMap, outcome: Optional[Outcome] = None, output: Optional[Output] = None):
-        return self.rule.needs_update()(
+    @classmethod
+    def needs_update(cls, output_map: OutputMap, outcome: Optional[Outcome] = None, output: Optional[Output] = None):
+        return cls.rule.needs_update()(
             output_map,
             outcome,
             output,
         )
 
+    @classmethod
     def expand_plan_node(
-        self,
+        cls,
         plan: "Plan",
     ) -> PlanNode:
-        artifact = self
+        plan_node = PlanNode(cls)
 
-        output_map = artifact.get_output_map()
-        execute = False
-        plan_node = PlanNode(artifact)
-        
-        for able in self.dependencies_map.values():
+        for able in cls.dependencies_map.values():
             print("able in expand: ", able)
             if isinstance(able, ArtifactOutputs):
                 dep_plan_node = plan.get_or_generate_plan_node(able.artifact)
                 plan_node.add_dependency(dep_plan_node)
-                # TODO: assuming that if a dependency executed, you must execute.
-                execute = True
 
         return plan_node
 
-    def make(self):
+    @classmethod
+    def make(cls):
         plan = Plan()
-        plan.get_or_generate_plan_node(self)
+        plan.get_or_generate_plan_node(cls)
         plan.execute()
+
+
+class InArtifact:
+    artifact = None
 
 
 class Plan:
     def __init__(self):
         self.leaf_nodes: list[PlanNode] = []
-        self.upstream: list[Artifact] = []
+        self.upstream: list[type[Artifact]] = []
         # Use None for artifacts that are not executed.
-        self.artifact_to_node: dict[Artifact, Optional[PlanNode]] = {}
+        self.artifact_to_node: dict[type[Artifact], Optional[PlanNode]] = {}
 
     def execute(self):
         finished: dict[int, PlanNode] = {}
@@ -396,17 +435,17 @@ class Plan:
             for i in all_done:
                 del finished[i]
 
-    def check_circular_dependency(self, artifact: Artifact):
+    def check_circular_dependency(self, artifact: type[Artifact]):
         for n in self.upstream:
-            if n.name == artifact.name:
+            if n is artifact:
                 raise ValueError(
                     "Circular dependency:\n"
-                    + "\n->".join(n.name for n in self.upstream)
+                    + "\n->".join(n.__name__ for n in self.upstream)
                     + "\n->"
-                    + artifact.name
+                    + artifact.__name__
                 )
 
-    def get_or_generate_plan_node(self, artifact: Artifact) -> Optional[PlanNode]:
+    def get_or_generate_plan_node(self, artifact: type[Artifact]) -> Optional[PlanNode]:
         if artifact in self.artifact_to_node:
             return self.artifact_to_node[artifact]
         self.check_circular_dependency(artifact)

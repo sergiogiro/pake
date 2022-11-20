@@ -95,26 +95,42 @@ class TestThisDirExec(unittest.TestCase):
                 needs_update=timestamp_based_outcome,
             )
 
-        this_dir_objs = artifact(
-            ObjsFromCs,
-            "this_dir_objs",
-            ObjsFromCsArgs.globExpr,
-            {**file_globs_dependency(["*.c"])}
-        )
+        class ThisDirObjs(Artifact):
+            rule = ObjsFromCs
+            args = ObjsFromCsArgs.globExpr
+            deps = {
+                GlobDependency: GlobExpr(["*.c"])
+            }
 
-        this_dir_exec = artifact(
-            ExecFromObjs,
-            "this_dir_exec",
-            ExecFromObjsArgs(exec_name="ppp"),
-            {FileNameListDependency: this_dir_objs.outputs("obj_files")}
-        )
+        class ThisDirExec(Artifact):
+            rule = ExecFromObjs
+            args = ExecFromObjsArgs(exec_name="ppp")
+            deps = {
+                FileNameListDependency: ThisDirObjs.outputs("obj_files")
+            }
 
         Path("a.o").touch()
         Path("b.o").unlink(missing_ok=True)
-        this_dir_exec.make()
+        ThisDirExec.make()
         print("Call args list:", mock_execute_in_shell.call_args_list)
 
         self.assertEqual(mock_execute_in_shell.call_args_list, [call(["gcc", "-c", "b.c"]), call(["gcc", "-o", "ppp", "a.o", "b.o"])])
+
+    # def test_class(self):
+    #     class Ppp:
+    #         a = 5
+    #
+    #         def __init_subclass__(cls, **kwargs):
+    #             cls.a = kwargs["a"]
+    #
+    #     class Qqq(Ppp, a=8):
+    #         pass
+    #
+    #     class Rrr:
+    #         abbb = 5
+    #         q = abbb + 1
+    #     print("Ppp:", Ppp.a)
+    #     print("Qqq:", Qqq.a)
 
 
 if __name__ == "__main__":
